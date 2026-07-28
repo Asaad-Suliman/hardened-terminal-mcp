@@ -10,7 +10,7 @@ from __future__ import annotations
 import shlex
 from dataclasses import dataclass
 
-from hardened_terminal_mcp.config import Policy
+from hardened_terminal_mcp.config import ArgumentRule, Policy
 
 # Shell control operators. Presence of any of these in the raw input means the
 # caller is trying to chain, redirect, or substitute — reject before any policy
@@ -41,6 +41,26 @@ def _find_metacharacter(raw: str) -> str | None:
     for meta in _METACHARACTERS:
         if meta in raw:
             return meta
+    return None
+
+
+def _matching_argument_rule(
+    name: str, args: list[str], policy: Policy
+) -> ArgumentRule | None:
+    """Return the first argument rule that denies ``args``, else None.
+
+    A rule fires when *all* tokens of any of its ``deny_args`` patterns are
+    present among ``args`` (order-independent). Order-independence deliberately
+    also blocks reordering bypasses like `git --force push`, not just
+    `git push --force`.
+    """
+    arg_set = set(args)
+    for rule in policy.rules:
+        if rule.command != name:
+            continue
+        for pattern in rule.deny_args:
+            if pattern and arg_set.issuperset(pattern):
+                return rule
     return None
 
 
@@ -96,6 +116,18 @@ def explain(raw: str, policy: Policy) -> Verdict:
             decision="deny",
             rule_fired="deny-by-default",
             reason=f"command {name!r} is not on the allowlist",
+        )
+
+    # Argument-level rules refine an allowed command: allowed in general but
+    # denied for specific argument patterns (e.g. `git` ok, `git push --force`
+    # not).
+    rule = _matching_argument_rule(name, argv[1:], policy)
+    if rule is not None:
+        return Verdict(
+            parsed_command=argv,
+            decision="deny",
+            rule_fired="argument-rule",
+            reason=rule.reason,
         )
 
     return Verdict(
