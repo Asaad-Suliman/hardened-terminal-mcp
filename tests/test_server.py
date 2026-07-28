@@ -11,6 +11,7 @@ from unittest.mock import Mock
 import pytest
 
 from hardened_terminal_mcp import server
+from hardened_terminal_mcp.audit import AuditLogger
 from hardened_terminal_mcp.config import load_policy
 from hardened_terminal_mcp.executor import ExecutionResult
 from hardened_terminal_mcp.server import CommandResult, ResultCode
@@ -38,7 +39,10 @@ def jail(tmp_path):
     """Configure the server with a fresh policy and a tmp jail root; return root."""
     policy_file = tmp_path / "policy.toml"
     policy_file.write_text(_POLICY_TOML)
-    server.configure(load_policy(policy_file), tmp_path)
+    server.configure(
+        load_policy(policy_file), tmp_path,
+        audit_logger=AuditLogger(tmp_path / "audit.jsonl"),
+    )
     return tmp_path
 
 

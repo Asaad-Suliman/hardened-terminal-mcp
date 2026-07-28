@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import os
 import sys
+import uuid
+from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 
@@ -24,6 +26,7 @@ from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel
 
 from hardened_terminal_mcp import executor
+from hardened_terminal_mcp.audit import AuditError, AuditLogger, AuditRecord
 from hardened_terminal_mcp.config import Policy, PolicyConfigError, load_policy
 from hardened_terminal_mcp.policy import Verdict, explain
 
@@ -45,6 +48,8 @@ class ResultCode(str, Enum):
     |                  | or absolute path outside the root). Not executed.        |
     | EXECUTOR_ERROR   | Executor could not run an allowed command (e.g. not      |
     |                  | found, permission denied, cwd vanished).                 |
+    | AUDIT_UNAVAILABLE| Audit record could not be written under fail-closed; the |
+    |                  | command was NOT executed (no unlogged execution).        |
     | INTERNAL_ERROR   | Unexpected server-side exception. Generic message only.  |
     """
 
@@ -55,6 +60,7 @@ class ResultCode(str, Enum):
     OUTPUT_TRUNCATED = "OUTPUT_TRUNCATED"
     CWD_ESCAPE = "CWD_ESCAPE"
     EXECUTOR_ERROR = "EXECUTOR_ERROR"
+    AUDIT_UNAVAILABLE = "AUDIT_UNAVAILABLE"
     INTERNAL_ERROR = "INTERNAL_ERROR"
 
 
@@ -75,14 +81,32 @@ mcp = FastMCP("hardened-terminal-mcp")
 # Configured once at startup by main() (or by tests via configure()).
 _POLICY: Policy | None = None
 _JAIL_ROOT: Path | None = None
+_AUDIT: AuditLogger | None = None
+_AUDIT_FAIL_MODE: str = "closed"
 
 
-def configure(policy: Policy, jail_root: str | Path) -> None:
-    """Set the active policy and jail root. Jail root is resolved to an absolute,
-    symlink-free path so cwd checks compare like against like."""
-    global _POLICY, _JAIL_ROOT
+class _AuditUnavailable(Exception):
+    """Internal: raised when a required audit write failed under fail-closed."""
+
+
+def configure(
+    policy: Policy,
+    jail_root: str | Path,
+    *,
+    audit_logger: AuditLogger | None = None,
+) -> None:
+    """Set the active policy, jail root, and audit logger.
+
+    Jail root is resolved to an absolute, symlink-free path so cwd checks compare
+    like against like. The audit logger defaults to one built from
+    ``policy.audit_log``; tests may inject their own. The fail mode always comes
+    from ``policy.audit_fail_mode``.
+    """
+    global _POLICY, _JAIL_ROOT, _AUDIT, _AUDIT_FAIL_MODE
     _POLICY = policy
     _JAIL_ROOT = Path(jail_root).resolve()
+    _AUDIT = audit_logger if audit_logger is not None else AuditLogger(policy.audit_log)
+    _AUDIT_FAIL_MODE = policy.audit_fail_mode
 
 
 def _require_config() -> tuple[Policy, Path]:
@@ -90,6 +114,56 @@ def _require_config() -> tuple[Policy, Path]:
     if _POLICY is None or _JAIL_ROOT is None:
         raise RuntimeError("server not configured: call configure() or main() first")
     return _POLICY, _JAIL_ROOT
+
+
+def _new_record(
+    tool: str,
+    command: str,
+    verdict: Verdict,
+    code: ResultCode,
+    *,
+    cwd: str | None = None,
+    exit_code: int | None = None,
+    duration_ms: int = 0,
+    stdout_bytes: int = 0,
+    stderr_bytes: int = 0,
+    event_id: str | None = None,
+) -> AuditRecord:
+    """Build one audit record. Byte counts only — never stdout/stderr content."""
+    return AuditRecord(
+        ts=datetime.now(timezone.utc).isoformat(),
+        event_id=event_id or str(uuid.uuid4()),
+        tool=tool,
+        command_raw=command,
+        argv=verdict.parsed_command,
+        cwd=cwd,
+        verdict=verdict.decision,
+        rule_fired=verdict.rule_fired,
+        code=code.value,
+        exit_code=exit_code,
+        duration_ms=duration_ms,
+        stdout_bytes=stdout_bytes,
+        stderr_bytes=stderr_bytes,
+    )
+
+
+def _audit(record: AuditRecord) -> None:
+    """Write one record honoring the fail mode.
+
+    fail-closed: a write failure raises _AuditUnavailable so the caller can refuse
+    to execute. fail-open: it warns on STDERR (never stdout — stdio carries
+    JSON-RPC) and returns, letting execution proceed.
+    """
+    if _AUDIT is None:
+        raise _AuditUnavailable("audit logger not configured")
+    try:
+        _AUDIT.write(record)
+    except AuditError as exc:
+        if _AUDIT_FAIL_MODE == "open":
+            print(f"warning: audit unavailable, proceeding (fail-open): {exc}",
+                  file=sys.stderr)
+            return
+        raise _AuditUnavailable(str(exc)) from exc
 
 
 def _denial_code(verdict: Verdict) -> ResultCode:
@@ -142,62 +216,88 @@ def _map_execution(result: executor.ExecutionResult, reason: str) -> CommandResu
     )
 
 
+def _serve(tool: str, command: str, cwd: str | None, *, execute: bool) -> CommandResult:
+    """Single audit write point for both tools.
+
+    Every path — denial, parse error, cwd escape, execution, dry run — writes an
+    audit record here, so auditing can't be forgotten when a tool is added later.
+    On the executing path two records share one event_id: an ATTEMPT record
+    written BEFORE the executor runs (the fail-closed gate against unlogged
+    execution) and an OUTCOME record written after. All other paths write one.
+
+    When ``execute`` is False (explain_command) the executor branch is
+    unreachable — the dry run cannot run a command.
+    """
+    policy, jail_root = _require_config()
+    verdict = explain(command, policy)
+
+    # Non-executing: a denial, a parse error, or a dry run. One record, no exec.
+    if verdict.decision != "allow" or not execute:
+        if verdict.decision == "allow":
+            code, ok = ResultCode.OK, True
+        else:
+            code, ok = _denial_code(verdict), False
+        _audit(_new_record(tool, command, verdict, code, cwd=cwd))
+        return CommandResult(ok=ok, code=code, exit_code=None,
+                             policy_reason=verdict.reason)
+
+    resolved = _resolve_cwd(cwd, jail_root)
+    if resolved is None:
+        _audit(_new_record(tool, command, verdict, ResultCode.CWD_ESCAPE, cwd=cwd))
+        return CommandResult(ok=False, code=ResultCode.CWD_ESCAPE, exit_code=None,
+                             policy_reason=f"cwd escapes jail root: {cwd!r}")
+
+    event_id = str(uuid.uuid4())
+    # ATTEMPT record before execution: the fail-closed gate. If this write fails
+    # under fail-closed, _audit raises and the executor is never reached.
+    _audit(_new_record(tool, command, verdict, ResultCode.OK, cwd=cwd,
+                       event_id=event_id))
+
+    result = _map_execution(executor.run(command, policy, cwd=resolved), verdict.reason)
+
+    # OUTCOME record after execution (same event_id). Byte counts only.
+    _audit(_new_record(tool, command, verdict, result.code, cwd=cwd,
+                       exit_code=result.exit_code, duration_ms=result.duration_ms,
+                       stdout_bytes=len(result.stdout.encode("utf-8")),
+                       stderr_bytes=len(result.stderr.encode("utf-8")),
+                       event_id=event_id))
+    return result
+
+
+def _finish(tool: str, command: str, cwd: str | None, *, execute: bool) -> CommandResult:
+    """Wrap _serve with the error taxonomy: audit failure -> AUDIT_UNAVAILABLE,
+    any other exception -> INTERNAL_ERROR. No traceback ever reaches the client."""
+    try:
+        return _serve(tool, command, cwd, execute=execute)
+    except _AuditUnavailable as exc:
+        return CommandResult(ok=False, code=ResultCode.AUDIT_UNAVAILABLE, exit_code=None,
+                             policy_reason=f"audit log unavailable: {exc}")
+    except Exception:
+        return CommandResult(ok=False, code=ResultCode.INTERNAL_ERROR,
+                             stderr="internal error")
+
+
 @mcp.tool()
 def run_command(command: str, cwd: str | None = None) -> CommandResult:
     """Evaluate ``command`` against policy and, if allowed, run it sandboxed.
 
     Denied commands are never executed. ``cwd`` (if given) must resolve inside
     the jail root; any traversal/symlink/absolute escape returns CWD_ESCAPE.
-    Any unexpected error becomes INTERNAL_ERROR with a generic message.
+    Every invocation is audited; under fail-closed an unwritable audit log
+    returns AUDIT_UNAVAILABLE without executing.
     """
-    try:
-        policy, jail_root = _require_config()
-        verdict = explain(command, policy)
-        if verdict.decision != "allow":
-            return CommandResult(
-                ok=False, code=_denial_code(verdict), exit_code=None,
-                policy_reason=verdict.reason,
-            )
-
-        resolved = _resolve_cwd(cwd, jail_root)
-        if resolved is None:
-            return CommandResult(
-                ok=False, code=ResultCode.CWD_ESCAPE, exit_code=None,
-                policy_reason=f"cwd escapes jail root: {cwd!r}",
-            )
-
-        result = executor.run(command, policy, cwd=resolved)
-        return _map_execution(result, verdict.reason)
-    except Exception:
-        return CommandResult(
-            ok=False, code=ResultCode.INTERNAL_ERROR, stderr="internal error",
-        )
+    return _finish("run_command", command, cwd, execute=True)
 
 
 @mcp.tool()
 def explain_command(command: str) -> CommandResult:
     """Dry run: return the policy verdict without executing anything.
 
-    stdout/stderr are always empty and exit_code is always None. This function
-    does not reference the executor at all, so it is structurally impossible for
-    it to run a command (see test_explain_command_cannot_execute).
+    stdout/stderr are always empty and exit_code is always None. It routes
+    through _serve with execute=False, so the executor branch is unreachable —
+    the dry run cannot run a command (see test_explain_command_cannot_execute).
     """
-    try:
-        policy, _ = _require_config()
-        verdict = explain(command, policy)
-        if verdict.decision == "allow":
-            return CommandResult(
-                ok=True, code=ResultCode.OK, exit_code=None,
-                policy_reason=verdict.reason,
-            )
-        return CommandResult(
-            ok=False, code=_denial_code(verdict), exit_code=None,
-            policy_reason=verdict.reason,
-        )
-    except Exception:
-        return CommandResult(
-            ok=False, code=ResultCode.INTERNAL_ERROR, stderr="internal error",
-        )
+    return _finish("explain_command", command, None, execute=False)
 
 
 def main() -> None:
