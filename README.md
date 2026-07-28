@@ -165,3 +165,69 @@ Register it like any stdio MCP server (example shape):
   }
 }
 ```
+
+## Tool reference
+
+Both tools return a `CommandResult`:
+
+```
+CommandResult {
+  ok: bool                 # true only for OK / OUTPUT_TRUNCATED
+  code: ResultCode         # see taxonomy below
+  stdout: str              # redacted; empty for explain / non-executing paths
+  stderr: str              # redacted
+  exit_code: int | null    # process exit code; null when nothing ran
+  duration_ms: int
+  policy_reason: str | null  # human-readable allow/deny reason
+}
+```
+
+- **`run_command(command: str, cwd: str | None = None)`** — evaluate `command`
+  against policy and, if allowed, run it sandboxed. `cwd` (if given) must resolve
+  inside the jail root, else `CWD_ESCAPE`. Every call is audited.
+- **`explain_command(command: str)`** — dry run: return the policy verdict only,
+  with empty `stdout`/`stderr` and `exit_code = null`. It never reaches the
+  executor.
+
+### ResultCode taxonomy
+
+Each code maps to exactly one condition.
+
+| Code                | Meaning                                                        |
+| ------------------- | -------------------------------------------------------------- |
+| `OK`                | Executed and returned (`exit_code` carries the process result) |
+| `POLICY_DENIED`     | Denied by policy (list, arg rule, shell metacharacter, empty)  |
+| `PARSE_ERROR`       | Command could not be parsed into an argv                       |
+| `TIMEOUT`           | Wall-clock timeout; the process was killed                     |
+| `OUTPUT_TRUNCATED`  | Ran, but output hit the byte cap                               |
+| `CWD_ESCAPE`        | Requested cwd escaped the jail root                            |
+| `EXECUTOR_ERROR`    | Allowed command couldn't run (not found, permission, etc.)     |
+| `AUDIT_UNAVAILABLE` | Fail-closed: the audit record couldn't be written; not run     |
+| `INTERNAL_ERROR`    | Unexpected server error; generic message only, no traceback    |
+
+## Honest caveats
+
+This is a hardening layer, not a vault. Read these before deploying.
+
+- **Redaction is best-effort, not a guarantee.** It is regex/pattern-based. It
+  catches common secret shapes (see the pattern list) but a novel or unusual
+  format will pass through. Do not rely on it as your only secret control, and do
+  not allowlist commands that print secrets you can't afford to leak.
+- **The audit log is tamper-evident, not tamper-proof.** The server writes
+  append-only with per-record flush+fsync, so it won't lose records to a crash.
+  But anyone with host filesystem access can read, edit, or delete `audit.jsonl`.
+  Protect it with OS permissions and ship it off-host if you need integrity.
+- **No log rotation.** The audit trail grows without bound; rotating, compressing,
+  and retaining it is the operator's responsibility (e.g. `logrotate`).
+- **The jail is a path check, not a kernel sandbox.** Containment is a resolve +
+  `is_relative_to` check on the cwd. There are no namespaces, cgroups, or seccomp.
+  A process that can escape via a kernel bug or an allowlisted escape hatch is not
+  contained. For stronger isolation, run the whole server inside a container/VM.
+- **Policy strength is entirely the operator's allowlist.** The engine faithfully
+  enforces what you configure. Allow `bash`, `python`, `env`, `find`, or any tool
+  with `-exec`/eval semantics and you have handed over a general-purpose shell.
+  Keep the allowlist minimal and argument-scoped.
+- **Short flags aren't redacted by default.** `cli_flag` matches long forms only
+  (`--password`, `--token`, `--secret`, `--api-key`, `--apikey`) because a bare
+  `-p` means something else in `cp`/`ssh`/etc. Re-add short flags for your tools
+  via `redaction.extra_patterns`.
