@@ -20,7 +20,12 @@ to a single directory.
   is a `CommandResult` envelope with a typed `ResultCode`.
 - **Audited.** Every invocation of both tools is appended to a JSONL trail
   (byte counts only, never output content). Under fail-closed, a command that
-  can't be logged is not run.
+  can't be logged is not run. The audit log must live outside the jail root or
+  startup is refused.
+- **Redacted.** Secrets (API keys, tokens, private keys, JWTs, auth headers,
+  `KEY=value`/`--password X` values) are stripped from tool output and from
+  audit `command_raw`/`argv`. Output is redacted _before_ truncation, so a
+  secret can never be split across the cap and left half-visible.
 
 ## How it works
 
@@ -80,14 +85,42 @@ Records carry byte counts (`stdout_bytes`, `stderr_bytes`) but **never** the
 output content — secret redaction is a separate concern.
 
 An executed command writes two records sharing one `event_id`: an **attempt**
-record before execution and an **outcome** record after. The attempt record is
-written first so a crash mid-execution can never leave a silently-unlogged
-command. Denials, parse errors, cwd escapes, and dry runs write a single record.
+record before execution and an **outcome** record after — told apart by the
+explicit `record_type` field (`"attempt"` | `"outcome"`), not by inference. The
+attempt record is written first so a crash mid-execution can never leave a
+silently-unlogged command. Denials, parse errors, cwd escapes, and dry runs
+write a single `"outcome"` record.
+
+`command_raw` and `argv` are redacted (see Redaction); output content is still
+never recorded — only byte counts.
 
 `audit_fail_mode` controls what happens when a record can't be written:
 
 - **`closed`** (default) — refuse to execute; return `AUDIT_UNAVAILABLE`.
 - **`open`** — execute anyway and emit a warning to stderr.
+
+## Redaction
+
+`[redaction]` in `policy.toml` scrubs secrets from tool output and audit records:
+
+```toml
+[redaction]
+enabled = true
+entropy_fallback = false
+extra_patterns = []   # e.g. [{ name = "internal_id", regex = "INT-[0-9]{8}" }]
+```
+
+Built-in patterns cover OpenAI/GitHub/Slack/LangSmith keys, AWS access and secret
+keys, private-key blocks, JWTs, `Authorization:` headers, `KEY=value` assignments,
+and `--password/--token/-p` flag values. Each secret becomes
+`[REDACTED:<pattern_name>]`; for keyed secrets only the _value_ is replaced, so an
+operator still sees that a secret appeared and which kind. Operator
+`extra_patterns` are validated at startup — an invalid regex fails loudly rather
+than being silently skipped.
+
+`entropy_fallback` (off by default) additionally redacts unrecognised
+high-entropy tokens. It is **noisy**: it trips on hashes, UUIDs, and base64 data,
+so enable it only when false positives are acceptable.
 
 ## Tests
 
