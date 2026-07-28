@@ -6,6 +6,13 @@
 # Commands containing shell metacharacters (; | & < > ` $(...) ) are rejected
 # before any allow/deny check — no chaining, redirection, or substitution.
 
+# Audit trail: every tool invocation is appended as one JSON line.
+# audit_fail_mode = "closed" refuses to run a command if the record can't be
+# written (no unlogged execution); "open" runs anyway and warns on stderr.
+# Env overrides: HTMCP_AUDIT_LOG, HTMCP_AUDIT_FAIL_MODE.
+audit_log = "audit.jsonl"
+audit_fail_mode = "closed"
+
 [allowlist]
 # Commands permitted to run (by name). Arguments may still be restricted by
 # [[rules]] below.

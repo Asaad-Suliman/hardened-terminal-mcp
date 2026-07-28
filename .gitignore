@@ -5,3 +5,7 @@ __pycache__/
 build/
 dist/
 *.egg-info/
+
+# Audit logs — never commit a real trail.
+audit.jsonl
+*.jsonl
