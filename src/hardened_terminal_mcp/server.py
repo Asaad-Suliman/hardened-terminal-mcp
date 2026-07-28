@@ -18,6 +18,7 @@ from __future__ import annotations
 import os
 import sys
 import uuid
+from collections.abc import Callable
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
@@ -28,6 +29,7 @@ from pydantic import BaseModel
 from hardened_terminal_mcp import executor
 from hardened_terminal_mcp.audit import AuditError, AuditLogger, AuditRecord
 from hardened_terminal_mcp.config import Policy, PolicyConfigError, load_policy
+from hardened_terminal_mcp.redact import build_patterns, make_redactor
 from hardened_terminal_mcp.policy import Verdict, explain
 
 __all__ = ["ResultCode", "CommandResult", "run_command", "explain_command", "main"]
@@ -83,6 +85,7 @@ _POLICY: Policy | None = None
 _JAIL_ROOT: Path | None = None
 _AUDIT: AuditLogger | None = None
 _AUDIT_FAIL_MODE: str = "closed"
+_REDACTOR: Callable[[str], str] | None = None  # None when redaction is disabled
 
 
 class _AuditUnavailable(Exception):
@@ -102,11 +105,18 @@ def configure(
     ``policy.audit_log``; tests may inject their own. The fail mode always comes
     from ``policy.audit_fail_mode``.
     """
-    global _POLICY, _JAIL_ROOT, _AUDIT, _AUDIT_FAIL_MODE
+    global _POLICY, _JAIL_ROOT, _AUDIT, _AUDIT_FAIL_MODE, _REDACTOR
     _POLICY = policy
     _JAIL_ROOT = Path(jail_root).resolve()
     _AUDIT = audit_logger if audit_logger is not None else AuditLogger(policy.audit_log)
     _AUDIT_FAIL_MODE = policy.audit_fail_mode
+    if policy.redaction_enabled:
+        patterns = build_patterns(policy.redaction_extra_patterns)
+        _REDACTOR = make_redactor(
+            patterns, entropy_fallback=policy.redaction_entropy_fallback
+        )
+    else:
+        _REDACTOR = None
 
 
 def _require_config() -> tuple[Policy, Path]:
@@ -114,6 +124,27 @@ def _require_config() -> tuple[Policy, Path]:
     if _POLICY is None or _JAIL_ROOT is None:
         raise RuntimeError("server not configured: call configure() or main() first")
     return _POLICY, _JAIL_ROOT
+
+
+# Flags whose *following* argv token is a secret value. Per-token redaction can't
+# see the pair (the value token is a bare string), so we redact the next token
+# after one of these. Mirrors redact.cli_flag, which handles the joined string.
+_SECRET_VALUE_FLAGS = frozenset({"--password", "--token", "-p"})
+
+
+def _redact_argv(argv: list[str], redactor: Callable[[str], str]) -> list[str]:
+    """Redact each token; also redact the token after a bare secret-value flag."""
+    out: list[str] = []
+    redact_next = False
+    for tok in argv:
+        if redact_next:
+            out.append("[REDACTED:cli_flag]")
+            redact_next = False
+            continue
+        out.append(redactor(tok))
+        if tok in _SECRET_VALUE_FLAGS:
+            redact_next = True
+    return out
 
 
 def _new_record(
@@ -129,13 +160,22 @@ def _new_record(
     stderr_bytes: int = 0,
     event_id: str | None = None,
 ) -> AuditRecord:
-    """Build one audit record. Byte counts only — never stdout/stderr content."""
+    """Build one audit record. Byte counts only — never stdout/stderr content.
+
+    command_raw and argv are redacted: a secret passed as an argument (e.g. an
+    Authorization header on a curl command) is the most likely leak path, and it
+    lives in the command, not the output.
+    """
+    command_raw = _REDACTOR(command) if _REDACTOR is not None else command
+    argv = verdict.parsed_command
+    if _REDACTOR is not None and argv is not None:
+        argv = _redact_argv(argv, _REDACTOR)
     return AuditRecord(
         ts=datetime.now(timezone.utc).isoformat(),
         event_id=event_id or str(uuid.uuid4()),
         tool=tool,
-        command_raw=command,
-        argv=verdict.parsed_command,
+        command_raw=command_raw,
+        argv=argv,
         cwd=cwd,
         verdict=verdict.decision,
         rule_fired=verdict.rule_fired,
@@ -253,7 +293,10 @@ def _serve(tool: str, command: str, cwd: str | None, *, execute: bool) -> Comman
     _audit(_new_record(tool, command, verdict, ResultCode.OK, cwd=cwd,
                        event_id=event_id))
 
-    result = _map_execution(executor.run(command, policy, cwd=resolved), verdict.reason)
+    result = _map_execution(
+        executor.run(command, policy, cwd=resolved, redactor=_REDACTOR),
+        verdict.reason,
+    )
 
     # OUTCOME record after execution (same event_id). Byte counts only.
     _audit(_new_record(tool, command, verdict, result.code, cwd=cwd,

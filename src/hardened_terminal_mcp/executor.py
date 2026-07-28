@@ -12,6 +12,7 @@ from __future__ import annotations
 import os
 import subprocess
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -61,6 +62,19 @@ def _cap(data: bytes, limit: int) -> tuple[bytes, bool]:
     return data[:limit] + _TRUNCATION_MARKER, True
 
 
+def _finalize(
+    raw: bytes, limit: int, redactor: Callable[[str], str] | None
+) -> tuple[str, bool]:
+    """Decode, redact, THEN cap. Redaction runs on the full output before the
+    byte-cap so a secret can never be split across the truncation boundary and
+    left half-visible."""
+    text = raw.decode("utf-8", errors="replace")
+    if redactor is not None:
+        text = redactor(text)
+    capped, cut = _cap(text.encode("utf-8"), limit)
+    return capped.decode("utf-8", errors="replace"), cut
+
+
 def _child_env() -> dict[str, str]:
     """Minimal environment for the child: allowlisted vars only."""
     env = {k: os.environ[k] for k in _ENV_ALLOWLIST if k in os.environ}
@@ -75,12 +89,16 @@ def run(
     cwd: str | Path,
     timeout: float = 30,
     max_output_bytes: int = 65536,
+    redactor: Callable[[str], str] | None = None,
 ) -> ExecutionResult:
     """Evaluate ``raw`` against ``policy`` and, if allowed, execute it safely.
 
     Belt-and-suspenders: the policy is re-checked here even though the caller may
     already have done so — this module never trusts its input. A denied command,
     or a missing/invalid ``cwd``, returns a refused result and runs nothing.
+
+    ``redactor`` (if given) scrubs secrets from stdout/stderr before the output is
+    capped, so a secret can never straddle the truncation boundary.
     """
     verdict = explain(raw, policy)
     if verdict.decision != "allow":
@@ -121,12 +139,12 @@ def run(
 
     duration = time.monotonic() - start
 
-    stdout_bytes, stdout_cut = _cap(stdout_raw, max_output_bytes)
-    stderr_bytes, stderr_cut = _cap(stderr_raw, max_output_bytes)
+    stdout, stdout_cut = _finalize(stdout_raw, max_output_bytes, redactor)
+    stderr, stderr_cut = _finalize(stderr_raw, max_output_bytes, redactor)
 
     return ExecutionResult(
-        stdout=stdout_bytes.decode("utf-8", errors="replace"),
-        stderr=stderr_bytes.decode("utf-8", errors="replace"),
+        stdout=stdout,
+        stderr=stderr,
         exit_code=exit_code,
         timed_out=timed_out,
         truncated=stdout_cut or stderr_cut,
