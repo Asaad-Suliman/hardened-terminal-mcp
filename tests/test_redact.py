@@ -67,6 +67,9 @@ _NEGATIVES = [
     ("uuid", "request id 550e8400-e29b-41d4-a716-446655440000 ok"),
     ("prose", "The quick brown fox jumps over the lazy dog by the river."),
     ("version", "package v2.34.1 build 12345 released"),
+    # Regression: bare -p must NOT trigger cli_flag (it means preserve / port).
+    ("cp_p", "cp -p a b"),
+    ("ssh_p", "ssh -p 22 host"),
 ]
 
 

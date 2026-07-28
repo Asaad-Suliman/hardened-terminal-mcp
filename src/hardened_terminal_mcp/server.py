@@ -129,7 +129,9 @@ def _require_config() -> tuple[Policy, Path]:
 # Flags whose *following* argv token is a secret value. Per-token redaction can't
 # see the pair (the value token is a bare string), so we redact the next token
 # after one of these. Mirrors redact.cli_flag, which handles the joined string.
-_SECRET_VALUE_FLAGS = frozenset({"--password", "--token", "-p"})
+_SECRET_VALUE_FLAGS = frozenset(
+    {"--password", "--token", "--secret", "--api-key", "--apikey"}
+)
 
 
 def _redact_argv(argv: list[str], redactor: Callable[[str], str]) -> list[str]:

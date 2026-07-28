@@ -72,8 +72,12 @@ BUILTIN_PATTERNS: tuple[Pattern, ...] = (
         flags=re.IGNORECASE,
     ),
     _p(
+        # Long forms only. Bare short flags like -p are intentionally excluded:
+        # -p means something else in cp/ssh/etc. and redacting the next token
+        # corrupts ordinary commands. Operators can re-add short flags via
+        # redaction.extra_patterns.
         "cli_flag",
-        r"(?<!\S)((?:--password|--token|-p)(?:=|\s+))\S+",
+        r"(?<!\S)((?:--password|--token|--secret|--api-key|--apikey)(?:=|\s+))\S+",
         keep_prefix=True,
     ),
     _p(
