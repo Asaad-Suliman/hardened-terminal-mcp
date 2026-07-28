@@ -80,3 +80,88 @@ record after. `explain_command` follows the same path with execution skipped.
   alter, or delete it.
 - **Redaction completeness.** Redaction is pattern-based and best-effort; a
   novel secret format the patterns don't recognise can pass through.
+
+## Compared to a naive terminal MCP server
+
+Many quick MCP servers wrap `subprocess.run(cmd, shell=True)`. That is convenient
+and unsafe. This table is factual, not a claim of perfect security.
+
+| Concern                | `subprocess.run(shell=True)`                | hardened-terminal-mcp                           |
+| ---------------------- | ------------------------------------------- | ----------------------------------------------- |
+| Command surface        | Any command the shell can parse             | Only allowlisted names; denylist wins           |
+| Shell metacharacters   | Interpreted (`;`, `\|`, `$()`, redirection) | Rejected before evaluation; no shell            |
+| Argument handling      | Re-parsed by the shell                      | Pre-parsed argv, passed verbatim                |
+| Working directory      | Wherever the process is                     | Pinned to a required jail root; escapes refused |
+| Runaway commands       | Runs until it finishes                      | Wall-clock timeout + kill                       |
+| Output size            | Unbounded                                   | Byte-capped with a marker                       |
+| Environment            | Full parent env (secrets included)          | Scrubbed to `PATH`/`HOME`/`LANG`                |
+| Secrets in output/args | Passed through                              | Pattern-redacted before return and before audit |
+| Auditability           | None by default                             | Append-only JSONL; fail-closed by default       |
+| Failure surface        | Tracebacks may reach the client             | Errors are typed data; no traceback leaks       |
+
+## Install & configuration
+
+Requires Python 3.12+. Install with [uv](https://docs.astral.sh/uv/):
+
+```sh
+uv sync
+```
+
+### policy.toml
+
+```toml
+# jail_root is REQUIRED (here or via HTMCP_JAIL_ROOT). Keep the audit log OUTSIDE it.
+jail_root = "/srv/htmcp/sandbox"
+
+audit_log = "/var/log/htmcp/audit.jsonl"
+audit_fail_mode = "closed"   # "closed" = don't run if unloggable; "open" = run + warn
+
+[allowlist]
+commands = ["ls", "cat", "echo", "git"]
+
+[denylist]
+commands = ["rm", "shutdown", "curl"]   # denylist always wins
+
+# Allowed in general, denied for specific argument patterns (order-independent).
+[[rules]]
+command = "git"
+deny_args = ["push --force", "push -f"]
+reason = "force-push rewrites shared history"
+
+[redaction]
+enabled = true
+entropy_fallback = false   # noisy on hashes/UUIDs/base64 — see Caveats
+extra_patterns = []        # e.g. [{ name = "internal_id", regex = "INT-[0-9]{8}" }]
+```
+
+### Environment variables
+
+| Variable                | Meaning                                               | Default                     |
+| ----------------------- | ----------------------------------------------------- | --------------------------- |
+| `HTMCP_POLICY_FILE`     | Path to `policy.toml`                                 | `policy.toml`               |
+| `HTMCP_JAIL_ROOT`       | Jail directory (**required** via this or `jail_root`) | — (refuse if unset)         |
+| `HTMCP_AUDIT_LOG`       | Audit trail path                                      | `audit.jsonl` (from policy) |
+| `HTMCP_AUDIT_FAIL_MODE` | `closed` or `open`                                    | `closed` (from policy)      |
+
+Env values override the file. Startup fails loudly on a missing/invalid policy, an
+unset or non-directory jail root, an invalid operator regex, or an audit log
+located inside the jail root.
+
+### MCP client config
+
+Register it like any stdio MCP server (example shape):
+
+```json
+{
+  "mcpServers": {
+    "hardened-terminal": {
+      "command": "uv",
+      "args": ["run", "hardened-terminal-mcp"],
+      "env": {
+        "HTMCP_JAIL_ROOT": "/srv/htmcp/sandbox",
+        "HTMCP_POLICY_FILE": "/etc/htmcp/policy.toml"
+      }
+    }
+  }
+}
+```
