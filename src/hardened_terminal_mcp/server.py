@@ -23,7 +23,9 @@ from pathlib import Path
 from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel
 
+from hardened_terminal_mcp import executor
 from hardened_terminal_mcp.config import Policy, PolicyConfigError, load_policy
+from hardened_terminal_mcp.policy import Verdict, explain
 
 __all__ = ["ResultCode", "CommandResult", "run_command", "explain_command", "main"]
 
@@ -81,6 +83,95 @@ def configure(policy: Policy, jail_root: str | Path) -> None:
     global _POLICY, _JAIL_ROOT
     _POLICY = policy
     _JAIL_ROOT = Path(jail_root).resolve()
+
+
+def _require_config() -> tuple[Policy, Path]:
+    """Return the active policy and jail root, or fail if not configured."""
+    if _POLICY is None or _JAIL_ROOT is None:
+        raise RuntimeError("server not configured: call configure() or main() first")
+    return _POLICY, _JAIL_ROOT
+
+
+def _denial_code(verdict: Verdict) -> ResultCode:
+    """Map a denying verdict to its ResultCode. Only a shlex parse failure is a
+    PARSE_ERROR; every other denial (metacharacter, empty, list, arg rule) is a
+    policy decision."""
+    if verdict.rule_fired == "parse-error":
+        return ResultCode.PARSE_ERROR
+    return ResultCode.POLICY_DENIED
+
+
+def _resolve_cwd(cwd: str | None, jail_root: Path) -> Path | None:
+    """Resolve ``cwd`` to an absolute path confined to ``jail_root``.
+
+    Returns the resolved path, or None if it escapes the jail. ``resolve()``
+    normalizes ``..`` and follows symlinks, so traversal, symlink, and
+    absolute-path escapes all collapse to a simple containment check.
+    """
+    if cwd is None:
+        return jail_root
+    candidate = Path(cwd)
+    base = candidate if candidate.is_absolute() else jail_root / candidate
+    resolved = base.resolve()
+    if resolved == jail_root or resolved.is_relative_to(jail_root):
+        return resolved
+    return None
+
+
+def _map_execution(result: executor.ExecutionResult, reason: str) -> CommandResult:
+    """Map a Phase 2 ExecutionResult onto the CommandResult envelope."""
+    duration_ms = int(result.duration_seconds * 1000)
+    if result.timed_out:
+        return CommandResult(
+            ok=False, code=ResultCode.TIMEOUT, stdout=result.stdout,
+            stderr=result.stderr, exit_code=None, duration_ms=duration_ms,
+            policy_reason=reason,
+        )
+    # Executor sentinel: -1 without a timeout means it could not run the command
+    # (not found, permission denied, cwd vanished between check and exec).
+    if result.exit_code == -1:
+        return CommandResult(
+            ok=False, code=ResultCode.EXECUTOR_ERROR, stdout=result.stdout,
+            stderr=result.stderr, exit_code=None, duration_ms=duration_ms,
+            policy_reason=reason,
+        )
+    code = ResultCode.OUTPUT_TRUNCATED if result.truncated else ResultCode.OK
+    return CommandResult(
+        ok=True, code=code, stdout=result.stdout, stderr=result.stderr,
+        exit_code=result.exit_code, duration_ms=duration_ms, policy_reason=reason,
+    )
+
+
+@mcp.tool()
+def run_command(command: str, cwd: str | None = None) -> CommandResult:
+    """Evaluate ``command`` against policy and, if allowed, run it sandboxed.
+
+    Denied commands are never executed. ``cwd`` (if given) must resolve inside
+    the jail root; any traversal/symlink/absolute escape returns CWD_ESCAPE.
+    Any unexpected error becomes INTERNAL_ERROR with a generic message.
+    """
+    try:
+        policy, jail_root = _require_config()
+        verdict = explain(command, policy)
+        if verdict.decision != "allow":
+            return CommandResult(
+                ok=False, code=_denial_code(verdict), exit_code=None,
+                policy_reason=verdict.reason,
+            )
+
+        resolved = _resolve_cwd(cwd, jail_root)
+        if resolved is None:
+            return CommandResult(
+                ok=False, code=ResultCode.CWD_ESCAPE, exit_code=None,
+                policy_reason=f"cwd escapes jail root: {cwd!r}",
+            )
+
+        result = executor.run(command, policy, cwd=resolved)
+        return _map_execution(result, verdict.reason)
+    except Exception:
+        return CommandResult(
+            ok=False, code=ResultCode.INTERNAL_ERROR, stderr="internal error",
+        )
 
 
 def main() -> None:
