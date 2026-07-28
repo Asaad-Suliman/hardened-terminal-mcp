@@ -10,6 +10,8 @@ from __future__ import annotations
 import shlex
 from dataclasses import dataclass
 
+from hardened_terminal_mcp.config import Policy
+
 # Shell control operators. Presence of any of these in the raw input means the
 # caller is trying to chain, redirect, or substitute — reject before any policy
 # match so such input never reaches allow/deny evaluation.
@@ -42,11 +44,11 @@ def _find_metacharacter(raw: str) -> str | None:
     return None
 
 
-def explain(raw: str) -> Verdict:
+def explain(raw: str, policy: Policy) -> Verdict:
     """Run the pipeline built so far and return a structured verdict.
 
-    Executes nothing. Later phases insert name-level and argument-level
-    matching ahead of the deny-by-default fallthrough.
+    Executes nothing. Later phases insert argument-level matching ahead of the
+    deny-by-default fallthrough.
     """
     meta = _find_metacharacter(raw)
     if meta is not None:
@@ -75,9 +77,30 @@ def explain(raw: str) -> Verdict:
             reason="no command given",
         )
 
+    # Name-level matching. Case-insensitive so `RM` can't slip past `rm`.
+    name = argv[0].lower()
+
+    # DENY ALWAYS WINS: a command on both lists is denied.
+    if name in policy.denylist:
+        return Verdict(
+            parsed_command=argv,
+            decision="deny",
+            rule_fired="denylist",
+            reason=f"command {name!r} is on the denylist",
+        )
+
+    # Deny-by-default: anything not explicitly allowed is denied.
+    if name not in policy.allowlist:
+        return Verdict(
+            parsed_command=argv,
+            decision="deny",
+            rule_fired="deny-by-default",
+            reason=f"command {name!r} is not on the allowlist",
+        )
+
     return Verdict(
         parsed_command=argv,
-        decision="deny",
-        rule_fired="deny-by-default",
-        reason="command not in allowlist",
+        decision="allow",
+        rule_fired="allowlist",
+        reason=f"command {name!r} is allowed",
     )
