@@ -343,6 +343,17 @@ def explain_command(command: str) -> CommandResult:
     return _finish("explain_command", command, None, execute=False)
 
 
+def _audit_within_jail(audit_log: str | Path, jail_root: str | Path) -> bool:
+    """True if the audit log resolves to inside the jail root.
+
+    If it does, a permitted command could read the audit trail or append forged
+    records to it — so startup must refuse.
+    """
+    audit = Path(audit_log).resolve()
+    root = Path(jail_root).resolve()
+    return audit == root or root in audit.parents
+
+
 def main() -> None:
     """Console entry point: load config once, fail loudly, then serve over stdio."""
     policy_path = os.environ.get("HTMCP_POLICY_FILE", "policy.toml")
@@ -356,6 +367,15 @@ def main() -> None:
 
     if not jail_root.is_dir():
         print(f"fatal: jail root is not a directory: {jail_root}", file=sys.stderr)
+        raise SystemExit(1)
+
+    if _audit_within_jail(policy.audit_log, jail_root):
+        print(
+            "fatal: audit log must live outside the jail root, else a permitted "
+            f"command could read or forge it:\n  audit log : {Path(policy.audit_log).resolve()}"
+            f"\n  jail root : {jail_root.resolve()}",
+            file=sys.stderr,
+        )
         raise SystemExit(1)
 
     configure(policy, jail_root)
