@@ -12,6 +12,8 @@ from dataclasses import dataclass
 
 from hardened_terminal_mcp.config import ArgumentRule, Policy
 
+__all__ = ["Verdict", "explain"]
+
 # Shell control operators. Presence of any of these in the raw input means the
 # caller is trying to chain, redirect, or substitute — reject before any policy
 # match so such input never reaches allow/deny evaluation.
@@ -65,10 +67,11 @@ def _matching_argument_rule(
 
 
 def explain(raw: str, policy: Policy) -> Verdict:
-    """Run the pipeline built so far and return a structured verdict.
+    """Evaluate ``raw`` against ``policy`` and return a structured verdict.
 
-    Executes nothing. Later phases insert argument-level matching ahead of the
-    deny-by-default fallthrough.
+    This is the single public, execution-free entry point — the dry-run /
+    explain feature. It runs the full pipeline (parse -> sanitize -> name match
+    -> argument rules) and reports which stage decided, but never runs anything.
     """
     meta = _find_metacharacter(raw)
     if meta is not None:
