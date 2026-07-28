@@ -1,12 +1,28 @@
 [project]
 name = "hardened-terminal-mcp"
 version = "0.1.0"
-description = "A security-hardened terminal MCP server."
+description = "A security-hardened MCP server for running allowlisted terminal commands: no shell, cwd jail, timeouts, output caps, env scrub, audit trail, and secret redaction."
+readme = "README.md"
 requires-python = ">=3.12"
+license = { file = "LICENSE" }
+authors = [{ name = "Asaad Suliman" }]
+keywords = ["mcp", "security", "sandbox", "terminal", "llm", "audit", "redaction"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Security",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
+]
 dependencies = [
     "mcp>=1.0.0",
     "pydantic>=2.0.0",
 ]
+
+[project.urls]
+Repository = "https://github.com/Asaad-Suliman/hardened-terminal-mcp"
+Issues = "https://github.com/Asaad-Suliman/hardened-terminal-mcp/issues"
 
 [project.scripts]
 hardened-terminal-mcp = "hardened_terminal_mcp.server:main"
