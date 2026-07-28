@@ -143,3 +143,54 @@ def test_fail_open_executes_and_warns(tmp_path, capsys):
     assert "hi" in result.stdout
     err = capsys.readouterr().err
     assert "audit" in err.lower()  # warning went to stderr
+
+
+# --- Phase 5: redaction of command_raw + argv ----------------------------
+
+def test_command_raw_redacted(tmp_path):
+    log = _configure(tmp_path)  # redaction enabled by default
+    secret = "sk-proj-abcdefghij1234567890ABCD"
+    server.run_command(f"echo {secret}")
+    for rec in _records(log):
+        assert secret not in rec["command_raw"]
+    assert "[REDACTED:openai_key]" in _records(log)[-1]["command_raw"]
+
+
+def test_argv_redacted(tmp_path):
+    log = _configure(tmp_path)
+    server.run_command("echo --token s3cr3tTokenValue")  # space-separated value
+    for rec in _records(log):
+        assert all("s3cr3tTokenValue" not in tok for tok in rec["argv"])
+    assert "[REDACTED:cli_flag]" in _records(log)[-1]["argv"]
+
+
+# --- Phase 5: record_type (Flag B) ---------------------------------------
+
+def test_record_type_present_and_correct(tmp_path):
+    log = _configure(tmp_path)
+    server.run_command("echo hi")      # attempt + outcome
+    server.explain_command("echo hi")  # outcome only
+    recs = _records(log)
+    run_types = [r["record_type"] for r in recs if r["tool"] == "run_command"]
+    explain_types = [r["record_type"] for r in recs if r["tool"] == "explain_command"]
+    assert run_types == ["attempt", "outcome"]
+    assert explain_types == ["outcome"]
+
+
+# --- Phase 5: Flag A — audit path inside the jail refuses startup ---------
+
+def test_audit_path_inside_jail_refuses_startup(tmp_path, monkeypatch):
+    (tmp_path / "policy.toml").write_text(
+        textwrap.dedent(
+            f"""
+            audit_log = "{tmp_path / 'audit.jsonl'}"
+
+            [allowlist]
+            commands = ["echo"]
+            """
+        )
+    )
+    monkeypatch.setenv("HTMCP_POLICY_FILE", str(tmp_path / "policy.toml"))
+    monkeypatch.setenv("HTMCP_JAIL_ROOT", str(tmp_path))
+    with pytest.raises(SystemExit):
+        server.main()  # refuses before ever calling mcp.run()
