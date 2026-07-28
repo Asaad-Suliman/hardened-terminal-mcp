@@ -8,9 +8,10 @@ rather than silently degrading to an insecure default.
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -41,6 +42,10 @@ class Policy:
     rules: tuple[ArgumentRule, ...]
     audit_log: str = "audit.jsonl"  # path to the JSONL audit trail
     audit_fail_mode: str = "closed"  # "closed" (block on log failure) | "open"
+    redaction_enabled: bool = True
+    redaction_entropy_fallback: bool = False
+    # Operator-defined extra patterns, validated (compilable) at load time.
+    redaction_extra_patterns: tuple[tuple[str, str], ...] = field(default_factory=tuple)
 
 
 def _require_str_list(value: object, where: str) -> list[str]:
@@ -69,6 +74,32 @@ def _parse_rule(raw: object, index: int) -> ArgumentRule:
         raise PolicyConfigError(f"{where}.reason must be a string")
 
     return ArgumentRule(command=command.lower(), deny_args=deny_args, reason=reason)
+
+
+def _parse_extra_patterns(raw: object) -> tuple[tuple[str, str], ...]:
+    """Validate ``[redaction].extra_patterns`` — a list of {name, regex} tables.
+
+    Each regex is compiled here purely to fail loudly on an invalid one; the
+    compiled objects are rebuilt by the redactor. Returns (name, regex) pairs.
+    """
+    if not isinstance(raw, list):
+        raise PolicyConfigError("redaction.extra_patterns must be a list of tables")
+    out: list[tuple[str, str]] = []
+    for i, item in enumerate(raw):
+        where = f"redaction.extra_patterns[{i}]"
+        if not isinstance(item, dict):
+            raise PolicyConfigError(f"{where} must be a table")
+        name, regex = item.get("name"), item.get("regex")
+        if not isinstance(name, str) or not name.strip():
+            raise PolicyConfigError(f"{where}.name must be a non-empty string")
+        if not isinstance(regex, str) or not regex:
+            raise PolicyConfigError(f"{where}.regex must be a non-empty string")
+        try:
+            re.compile(regex)
+        except re.error as exc:
+            raise PolicyConfigError(f"{where}.regex is not a valid regex: {exc}") from exc
+        out.append((name, regex))
+    return tuple(out)
 
 
 def load_policy(path: str | Path) -> Policy:
@@ -116,10 +147,25 @@ def load_policy(path: str | Path) -> Policy:
     if audit_fail_mode not in ("closed", "open"):
         raise PolicyConfigError('audit_fail_mode must be "closed" or "open"')
 
+    # Redaction settings.
+    redaction_section = data.get("redaction", {})
+    if not isinstance(redaction_section, dict):
+        raise PolicyConfigError("[redaction] must be a table")
+    redaction_enabled = redaction_section.get("enabled", True)
+    redaction_entropy = redaction_section.get("entropy_fallback", False)
+    if not isinstance(redaction_enabled, bool):
+        raise PolicyConfigError("redaction.enabled must be a boolean")
+    if not isinstance(redaction_entropy, bool):
+        raise PolicyConfigError("redaction.entropy_fallback must be a boolean")
+    extra_patterns = _parse_extra_patterns(redaction_section.get("extra_patterns", []))
+
     return Policy(
         allowlist=frozenset(c.lower() for c in allow),
         denylist=frozenset(c.lower() for c in deny),
         rules=rules,
         audit_log=audit_log,
         audit_fail_mode=audit_fail_mode,
+        redaction_enabled=redaction_enabled,
+        redaction_entropy_fallback=redaction_entropy,
+        redaction_extra_patterns=extra_patterns,
     )

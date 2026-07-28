@@ -13,6 +13,15 @@
 audit_log = "audit.jsonl"
 audit_fail_mode = "closed"
 
+# Secret redaction: strip secrets from tool output and audit records.
+# entropy_fallback catches unrecognised high-entropy tokens but is noisy on
+# hashes, UUIDs, and base64 data — off by default. extra_patterns lets an
+# operator add named rules; an invalid regex fails loudly at startup.
+[redaction]
+enabled = true
+entropy_fallback = false
+extra_patterns = []   # e.g. [{ name = "internal_id", regex = "INT-[0-9]{8}" }]
+
 [allowlist]
 # Commands permitted to run (by name). Arguments may still be restricted by
 # [[rules]] below.
