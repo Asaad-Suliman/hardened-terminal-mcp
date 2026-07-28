@@ -152,6 +152,7 @@ def _new_record(
     command: str,
     verdict: Verdict,
     code: ResultCode,
+    record_type: str,
     *,
     cwd: str | None = None,
     exit_code: int | None = None,
@@ -173,6 +174,7 @@ def _new_record(
     return AuditRecord(
         ts=datetime.now(timezone.utc).isoformat(),
         event_id=event_id or str(uuid.uuid4()),
+        record_type=record_type,
         tool=tool,
         command_raw=command_raw,
         argv=argv,
@@ -277,20 +279,21 @@ def _serve(tool: str, command: str, cwd: str | None, *, execute: bool) -> Comman
             code, ok = ResultCode.OK, True
         else:
             code, ok = _denial_code(verdict), False
-        _audit(_new_record(tool, command, verdict, code, cwd=cwd))
+        _audit(_new_record(tool, command, verdict, code, "outcome", cwd=cwd))
         return CommandResult(ok=ok, code=code, exit_code=None,
                              policy_reason=verdict.reason)
 
     resolved = _resolve_cwd(cwd, jail_root)
     if resolved is None:
-        _audit(_new_record(tool, command, verdict, ResultCode.CWD_ESCAPE, cwd=cwd))
+        _audit(_new_record(tool, command, verdict, ResultCode.CWD_ESCAPE, "outcome",
+                           cwd=cwd))
         return CommandResult(ok=False, code=ResultCode.CWD_ESCAPE, exit_code=None,
                              policy_reason=f"cwd escapes jail root: {cwd!r}")
 
     event_id = str(uuid.uuid4())
     # ATTEMPT record before execution: the fail-closed gate. If this write fails
     # under fail-closed, _audit raises and the executor is never reached.
-    _audit(_new_record(tool, command, verdict, ResultCode.OK, cwd=cwd,
+    _audit(_new_record(tool, command, verdict, ResultCode.OK, "attempt", cwd=cwd,
                        event_id=event_id))
 
     result = _map_execution(
@@ -299,7 +302,7 @@ def _serve(tool: str, command: str, cwd: str | None, *, execute: bool) -> Comman
     )
 
     # OUTCOME record after execution (same event_id). Byte counts only.
-    _audit(_new_record(tool, command, verdict, result.code, cwd=cwd,
+    _audit(_new_record(tool, command, verdict, result.code, "outcome", cwd=cwd,
                        exit_code=result.exit_code, duration_ms=result.duration_ms,
                        stdout_bytes=len(result.stdout.encode("utf-8")),
                        stderr_bytes=len(result.stderr.encode("utf-8")),

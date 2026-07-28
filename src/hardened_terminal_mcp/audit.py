@@ -26,10 +26,18 @@ class AuditError(Exception):
 
 
 class AuditRecord(BaseModel):
-    """One audited event. Content-free: stdout/stderr are counted, never stored."""
+    """One audited event. Content-free: stdout/stderr are counted, never stored.
+
+    ``record_type`` distinguishes the two records of an executed command:
+    "attempt" is written before execution (the fail-closed gate); "outcome" is
+    the terminal record. Single-record paths (denial, parse error, cwd escape,
+    dry run) are "outcome" — they have no separate attempt. Read this field to
+    tell them apart; do not infer it from the code value.
+    """
 
     ts: str  # ISO-8601 UTC
     event_id: str  # uuid4; the attempt and outcome records of one run share it
+    record_type: str  # "attempt" | "outcome"
     tool: str  # "run_command" | "explain_command"
     command_raw: str
     argv: list[str] | None  # parsed argv, or null if parsing failed
