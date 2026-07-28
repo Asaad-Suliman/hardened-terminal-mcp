@@ -18,6 +18,9 @@ to a single directory.
 - **Bounded.** Wall-clock timeout with process kill; stdout/stderr are capped.
 - **Errors are data.** No Python traceback ever reaches the client; every result
   is a `CommandResult` envelope with a typed `ResultCode`.
+- **Audited.** Every invocation of both tools is appended to a JSONL trail
+  (byte counts only, never output content). Under fail-closed, a command that
+  can't be logged is not run.
 
 ## How it works
 
@@ -40,6 +43,8 @@ Configuration (env vars, both optional):
 
 - `HTMCP_POLICY_FILE` — path to `policy.toml` (default: `policy.toml`).
 - `HTMCP_JAIL_ROOT` — directory commands are jailed to (default: process cwd).
+- `HTMCP_AUDIT_LOG` — path to the JSONL audit trail (default: `audit.jsonl`).
+- `HTMCP_AUDIT_FAIL_MODE` — `closed` (default) or `open` (see Audit trail).
 
 Startup fails loudly if the policy is missing/invalid or the jail root is not a
 directory. Edit `policy.toml` to change the allow/deny lists and argument rules.
@@ -56,16 +61,33 @@ Both tools return a `CommandResult`:
 
 `ResultCode` values:
 
-| Code               | Meaning                                                     |
-| ------------------ | ----------------------------------------------------------- |
-| `OK`               | Executed and returned (`exit_code` carries the result).     |
-| `POLICY_DENIED`    | Denied by policy (list, arg rule, metacharacter, empty).    |
-| `PARSE_ERROR`      | Command could not be parsed into an argv.                   |
-| `TIMEOUT`          | Wall-clock timeout; process killed.                         |
-| `OUTPUT_TRUNCATED` | Ran, but output hit the cap.                                |
-| `CWD_ESCAPE`       | `cwd` escaped the jail root.                                |
-| `EXECUTOR_ERROR`   | Allowed command couldn't run (not found, permission, etc.). |
-| `INTERNAL_ERROR`   | Unexpected server error; generic message only.              |
+| Code                | Meaning                                                     |
+| ------------------- | ----------------------------------------------------------- |
+| `OK`                | Executed and returned (`exit_code` carries the result).     |
+| `POLICY_DENIED`     | Denied by policy (list, arg rule, metacharacter, empty).    |
+| `PARSE_ERROR`       | Command could not be parsed into an argv.                   |
+| `TIMEOUT`           | Wall-clock timeout; process killed.                         |
+| `OUTPUT_TRUNCATED`  | Ran, but output hit the cap.                                |
+| `CWD_ESCAPE`        | `cwd` escaped the jail root.                                |
+| `EXECUTOR_ERROR`    | Allowed command couldn't run (not found, permission, etc.). |
+| `AUDIT_UNAVAILABLE` | Fail-closed: the audit record couldn't be written; not run. |
+| `INTERNAL_ERROR`    | Unexpected server error; generic message only.              |
+
+## Audit trail
+
+Every call to either tool is appended to `audit_log` (one JSON object per line).
+Records carry byte counts (`stdout_bytes`, `stderr_bytes`) but **never** the
+output content — secret redaction is a separate concern.
+
+An executed command writes two records sharing one `event_id`: an **attempt**
+record before execution and an **outcome** record after. The attempt record is
+written first so a crash mid-execution can never leave a silently-unlogged
+command. Denials, parse errors, cwd escapes, and dry runs write a single record.
+
+`audit_fail_mode` controls what happens when a record can't be written:
+
+- **`closed`** (default) — refuse to execute; return `AUDIT_UNAVAILABLE`.
+- **`open`** — execute anyway and emit a warning to stderr.
 
 ## Tests
 
