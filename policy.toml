@@ -1,0 +1,9 @@
+# Policy for hardened-terminal-mcp.
+# Deny-by-default: any command not explicitly allowed is rejected.
+# No real rules yet — filled in during Phase 1.
+
+[allowlist]
+# commands = []
+
+[denylist]
+# commands = []
