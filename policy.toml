@@ -1,9 +1,25 @@
 # Policy for hardened-terminal-mcp.
-# Deny-by-default: any command not explicitly allowed is rejected.
-# No real rules yet — filled in during Phase 1.
+#
+# DENY-BY-DEFAULT: any command whose name is not in [allowlist] is denied.
+# DENY WINS: a command appearing in both lists is denied.
+# Command-name matching is case-insensitive (`RM` is treated as `rm`).
+# Commands containing shell metacharacters (; | & < > ` $(...) ) are rejected
+# before any allow/deny check — no chaining, redirection, or substitution.
 
 [allowlist]
-# commands = []
+# Commands permitted to run (by name). Arguments may still be restricted by
+# [[rules]] below.
+commands = ["ls", "cat", "echo", "git"]
 
 [denylist]
-# commands = []
+# Commands that are always denied, even if also present in the allowlist.
+commands = ["rm", "shutdown", "curl"]
+
+# Argument-level rules. A rule allows a command in general but denies specific
+# argument patterns. A rule fires when ALL tokens of any deny_args pattern are
+# present among the command's arguments (order-independent) — so both
+# `git push --force` and `git --force push` are denied.
+[[rules]]
+command = "git"
+deny_args = ["push --force", "push -f"]
+reason = "force-push rewrites shared history"
