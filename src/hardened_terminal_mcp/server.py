@@ -8,9 +8,10 @@ traceback ever reaches the MCP client.
 Audit logging and secret redaction are intentionally out of scope here
 (Phases 4 and 5).
 
-Startup config (env vars, both optional):
+Startup config:
 - ``HTMCP_POLICY_FILE`` — path to policy.toml (default: ``policy.toml``).
-- ``HTMCP_JAIL_ROOT``   — directory commands are jailed to (default: process cwd).
+- ``HTMCP_JAIL_ROOT``   — directory commands are jailed to. REQUIRED (env or the
+  policy.toml ``jail_root`` key); startup refuses if unset. No cwd fallback.
 """
 
 from __future__ import annotations
@@ -362,7 +363,6 @@ def _audit_within_jail(audit_log: str | Path, jail_root: str | Path) -> bool:
 def main() -> None:
     """Console entry point: load config once, fail loudly, then serve over stdio."""
     policy_path = os.environ.get("HTMCP_POLICY_FILE", "policy.toml")
-    jail_root = Path(os.environ.get("HTMCP_JAIL_ROOT", os.getcwd()))
 
     try:
         policy = load_policy(policy_path)
@@ -370,6 +370,19 @@ def main() -> None:
         print(f"fatal: could not load policy: {exc}", file=sys.stderr)
         raise SystemExit(1)
 
+    # Jail root is REQUIRED — no cwd fallback. Defaulting to the launch directory
+    # once silently made a whole home directory the jail.
+    jail_root_str = os.environ.get("HTMCP_JAIL_ROOT") or policy.jail_root
+    if not jail_root_str:
+        print(
+            "fatal: no jail root configured. Set HTMCP_JAIL_ROOT or jail_root in "
+            "policy.toml to the directory commands may run in. It is required so "
+            "commands can never run outside an explicitly chosen sandbox.",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+
+    jail_root = Path(jail_root_str)
     if not jail_root.is_dir():
         print(f"fatal: jail root is not a directory: {jail_root}", file=sys.stderr)
         raise SystemExit(1)

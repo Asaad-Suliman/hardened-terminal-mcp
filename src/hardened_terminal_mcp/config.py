@@ -40,6 +40,7 @@ class Policy:
     allowlist: frozenset[str]  # lowercased command names
     denylist: frozenset[str]  # lowercased command names
     rules: tuple[ArgumentRule, ...]
+    jail_root: str = ""  # required at startup; "" means "not configured"
     audit_log: str = "audit.jsonl"  # path to the JSONL audit trail
     audit_fail_mode: str = "closed"  # "closed" (block on log failure) | "open"
     redaction_enabled: bool = True
@@ -147,6 +148,12 @@ def load_policy(path: str | Path) -> Policy:
     if audit_fail_mode not in ("closed", "open"):
         raise PolicyConfigError('audit_fail_mode must be "closed" or "open"')
 
+    # Jail root. Required at startup (see server.main), but validated as a string
+    # here; "" means "not configured" and is resolved/enforced by the entry point.
+    jail_root = data.get("jail_root", "")
+    if not isinstance(jail_root, str):
+        raise PolicyConfigError("jail_root must be a string")
+
     # Redaction settings.
     redaction_section = data.get("redaction", {})
     if not isinstance(redaction_section, dict):
@@ -163,6 +170,7 @@ def load_policy(path: str | Path) -> Policy:
         allowlist=frozenset(c.lower() for c in allow),
         denylist=frozenset(c.lower() for c in deny),
         rules=rules,
+        jail_root=jail_root,
         audit_log=audit_log,
         audit_fail_mode=audit_fail_mode,
         redaction_enabled=redaction_enabled,

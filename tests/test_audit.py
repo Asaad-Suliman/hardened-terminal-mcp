@@ -194,3 +194,38 @@ def test_audit_path_inside_jail_refuses_startup(tmp_path, monkeypatch):
     monkeypatch.setenv("HTMCP_JAIL_ROOT", str(tmp_path))
     with pytest.raises(SystemExit):
         server.main()  # refuses before ever calling mcp.run()
+
+
+# --- Phase 6: jail root is required, no cwd fallback ----------------------
+
+def test_no_jail_root_refuses_startup(tmp_path, monkeypatch):
+    (tmp_path / "policy.toml").write_text('[allowlist]\ncommands = ["echo"]\n')
+    monkeypatch.setenv("HTMCP_POLICY_FILE", str(tmp_path / "policy.toml"))
+    monkeypatch.delenv("HTMCP_JAIL_ROOT", raising=False)
+    with pytest.raises(SystemExit):
+        server.main()  # no env, no policy jail_root -> refuse
+
+
+def test_jail_root_from_policy_toml(tmp_path, monkeypatch):
+    jail = tmp_path / "jail"
+    jail.mkdir()
+    (tmp_path / "policy.toml").write_text(
+        textwrap.dedent(
+            f"""
+            jail_root = "{jail}"
+            audit_log = "{tmp_path / 'audit.jsonl'}"
+
+            [allowlist]
+            commands = ["echo"]
+            """
+        )
+    )
+    monkeypatch.setenv("HTMCP_POLICY_FILE", str(tmp_path / "policy.toml"))
+    monkeypatch.delenv("HTMCP_JAIL_ROOT", raising=False)
+    run_mock = Mock()
+    monkeypatch.setattr(server.mcp, "run", run_mock)  # don't block on stdio
+
+    server.main()
+
+    run_mock.assert_called_once()  # startup succeeded
+    assert server._JAIL_ROOT == jail.resolve()  # jail root came from policy.toml

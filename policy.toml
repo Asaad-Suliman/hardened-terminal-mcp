@@ -6,6 +6,11 @@
 # Commands containing shell metacharacters (; | & < > ` $(...) ) are rejected
 # before any allow/deny check — no chaining, redirection, or substitution.
 
+# Jail root: the directory commands may run in. REQUIRED — set it here or via
+# HTMCP_JAIL_ROOT (env wins). Startup refuses if unset; there is no cwd fallback.
+# Use an absolute path to a dedicated sandbox dir; keep the audit log OUTSIDE it.
+# jail_root = "/srv/htmcp/sandbox"
+
 # Audit trail: every tool invocation is appended as one JSON line.
 # audit_fail_mode = "closed" refuses to run a command if the record can't be
 # written (no unlogged execution); "open" runs anyway and warns on stderr.
