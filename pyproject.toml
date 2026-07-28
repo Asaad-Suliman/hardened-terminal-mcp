@@ -5,7 +5,11 @@ description = "A security-hardened terminal MCP server."
 requires-python = ">=3.12"
 dependencies = [
     "mcp>=1.0.0",
+    "pydantic>=2.0.0",
 ]
+
+[project.scripts]
+hardened-terminal-mcp = "hardened_terminal_mcp.server:main"
 
 [dependency-groups]
 dev = [
