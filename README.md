@@ -231,3 +231,33 @@ This is a hardening layer, not a vault. Read these before deploying.
   (`--password`, `--token`, `--secret`, `--api-key`, `--apikey`) because a bare
   `-p` means something else in `cp`/`ssh`/etc. Re-add short flags for your tools
   via `redaction.extra_patterns`.
+
+## Testing
+
+```sh
+uv run pytest
+```
+
+84 tests, isolated with `tmp_path` (they never touch a real policy or audit log):
+
+| Suite                  | Covers                                                                                                                                                |
+| ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `test_policy.py` (22)  | Deny-by-default, denylist-wins, case/spacing bypasses, metacharacter rejection, argument rules                                                        |
+| `test_executor.py` (7) | shell=False, timeout+kill, output cap, env scrub, cwd validation, refused commands                                                                    |
+| `test_server.py` (16)  | One test per `ResultCode`, both tools, envelope shape, cwd escapes, explain-never-executes                                                            |
+| `test_audit.py` (15)   | Attempt/outcome records, fail-closed vs fail-open, schema, no output content, redacted `command_raw`/`argv`, jail-root rules                          |
+| `test_redact.py` (23)  | One case per pattern, no-false-positives (paths, SHAs, UUIDs, `cp -p`), entropy on/off, redaction before truncation, invalid extra-regex fails loudly |
+| `test_smoke.py` (1)    | Import/health smoke                                                                                                                                   |
+
+CI runs the suite plus [gitleaks](https://github.com/gitleaks/gitleaks) on every
+push and pull request (see `.github/workflows/ci.yml`).
+
+## Related work
+
+- [Asaad-Suliman/MCP-file-organizer](https://github.com/Asaad-Suliman/MCP-file-organizer)
+  — a companion safe-MCP-server project applying the same deny-by-default,
+  audited, least-privilege approach to filesystem operations.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
