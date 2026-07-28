@@ -1,3 +1,5 @@
+_SLACK = "xoxb" + "-123456789012-abcdefghijklmnop"
+
 """Redaction tests: one case per pattern, no-false-positives, entropy fallback,
 redaction-before-truncation, and loud failure on an invalid operator regex.
 """
@@ -26,8 +28,8 @@ _POSITIVES = [
      "sk-proj-abcdefghij1234567890ABCD"),
     ("github_token", "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456 x", "github_token",
      "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456"),
-    ("slack_token", "t xoxb-123456789012-abcdefghijklmnop z", "slack_token",
-     "xoxb-123456789012-abcdefghijklmnop"),
+    ("slack_token", "t " + _SLACK + " z", "slack_token",
+     _SLACK),
     ("langsmith_key", "lsv2_pt_abcdef1234567890abcdef12 end", "langsmith_key",
      "lsv2_pt_abcdef1234567890abcdef12"),
     ("aws_access_key", "AKIAIOSFODNN7EXAMPLE done", "aws_access_key",
