@@ -174,6 +174,32 @@ def run_command(command: str, cwd: str | None = None) -> CommandResult:
         )
 
 
+@mcp.tool()
+def explain_command(command: str) -> CommandResult:
+    """Dry run: return the policy verdict without executing anything.
+
+    stdout/stderr are always empty and exit_code is always None. This function
+    does not reference the executor at all, so it is structurally impossible for
+    it to run a command (see test_explain_command_cannot_execute).
+    """
+    try:
+        policy, _ = _require_config()
+        verdict = explain(command, policy)
+        if verdict.decision == "allow":
+            return CommandResult(
+                ok=True, code=ResultCode.OK, exit_code=None,
+                policy_reason=verdict.reason,
+            )
+        return CommandResult(
+            ok=False, code=_denial_code(verdict), exit_code=None,
+            policy_reason=verdict.reason,
+        )
+    except Exception:
+        return CommandResult(
+            ok=False, code=ResultCode.INTERNAL_ERROR, stderr="internal error",
+        )
+
+
 def main() -> None:
     """Console entry point: load config once, fail loudly, then serve over stdio."""
     policy_path = os.environ.get("HTMCP_POLICY_FILE", "policy.toml")
