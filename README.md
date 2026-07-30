@@ -1,5 +1,7 @@
 # hardened-terminal-mcp
 
+[![CI](https://github.com/Asaad-Suliman/hardened-terminal-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/Asaad-Suliman/hardened-terminal-mcp/actions/workflows/ci.yml)
+
 A security-hardened [MCP](https://modelcontextprotocol.io) server that lets an AI
 model run a **small, explicitly allowlisted** set of terminal commands — safely.
 
