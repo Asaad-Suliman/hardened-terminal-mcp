@@ -9,3 +9,8 @@ dist/
 # Audit logs — never commit a real trail.
 audit.jsonl
 *.jsonl
+
+# README rewrite scratch — not for commit until reviewed.
+README.new.md
+.readme-rewrite-progress.md
+.readme-demo-capture.txt
