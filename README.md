@@ -312,6 +312,9 @@ push and pull request (see `.github/workflows/ci.yml`).
 - [Asaad-Suliman/MCP-file-organizer](https://github.com/Asaad-Suliman/MCP-file-organizer)
   — a companion safe-MCP-server project applying the same deny-by-default,
   audited, least-privilege approach to filesystem operations.
+- [Asaad-Suliman/safe-mcp-suite](https://github.com/Asaad-Suliman/safe-mcp-suite)
+  — this server's successor: the terminal server and the file organizer
+  rebuilt together on one shared, deny-by-default safety core.
 
 ## License
 
