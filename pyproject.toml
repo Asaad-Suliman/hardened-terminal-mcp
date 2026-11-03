@@ -16,7 +16,7 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Application Frameworks",
 ]
 dependencies = [
-    "mcp>=1.0.0",
+    "mcp>=1.30,<2",
     "pydantic>=2.0.0",
 ]
 
